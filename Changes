@@ -1,0 +1,6 @@
+Revision history for Perl extension Data::StreamDeserializer.
+
+0.01  Sat Jan 29 15:03:40 2011
+	- original version; created by h2xs 1.23 with options
+		-n Data::StreamDeserializer
+

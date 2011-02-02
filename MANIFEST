@@ -1,0 +1,18 @@
+lib/Data/StreamDeserializer.pm
+MANIFEST
+ppport.h
+fallback/const-xs.inc
+fallback/const-c.inc
+Makefile.PL
+StreamDeserializer.xs
+README
+Changes
+t/04_memoryleak.t
+t/01_low_level_tests.t
+t/03_big_object.t
+t/02_objects.t
+benchmark/tests/01_100x10
+benchmark/tests/02_1000x10
+benchmark/generate_test_array.pl
+benchmark/ds_vs_eval.pl
+META.yml                                 Module meta-data (added by MakeMaker)
