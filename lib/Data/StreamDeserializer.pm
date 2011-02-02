@@ -9,7 +9,7 @@ require Exporter;
 use AutoLoader;
 
 our @ISA = qw(Exporter);
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use XSLoader;
 XSLoader::load('Data::StreamDeserializer', $VERSION);
@@ -159,7 +159,7 @@ __END__
 
 =head1 NAME
 
-Data::StreamDeserializer - non-blocking serializer.
+Data::StreamDeserializer - non-blocking deserializer.
 
 =head1 SYNOPSIS
 
