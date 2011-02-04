@@ -9,7 +9,7 @@ require Exporter;
 use AutoLoader;
 
 our @ISA = qw(Exporter);
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use XSLoader;
 XSLoader::load('Data::StreamDeserializer', $VERSION);

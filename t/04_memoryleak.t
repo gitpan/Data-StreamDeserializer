@@ -74,7 +74,11 @@ for(;;)
 ok $size_end == $size, "Check memory leak";
 note "$i iterations were done, $len bytes were parsed";
 
-push @tests, Dumper gen_rand_object for 0 .. 50;
-ok Data::StreamDeserializer::_memory_size != $size_end,
-    "Check memory checker";
-
+$time = time;
+$size = $size_end;
+for (1 .. 2000_000 + int rand 5000_000) {
+    push @tests, rand rand 1000;
+    last if Data::StreamDeserializer::_memory_size != $size;
+}
+ok Data::StreamDeserializer::_memory_size != $size,
+    sprintf "Check memory checker (size: %d elements) :)", scalar @tests;
