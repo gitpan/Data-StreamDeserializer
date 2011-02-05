@@ -5,9 +5,6 @@
 
 #include "ppport.h"
 
-#include "const-c.inc"
-
-
 #define ONE_BLOCK_SIZE		512
 
 
@@ -20,12 +17,17 @@
 #define BLOCK_SIZE_KEY		"block_size"
 #define TAIL_KEY		"tail"
 #define COUNTER_KEY		"counter"
-#define BODY_DIGIT_KEY		"is_body_digit"
 #define BODY_START_KEY		"body_start"
 #define NEED_EVAL_KEY		"need_eval"
 #define SQUARE_BRACKET_KEY	"square_bracket_balance"
 #define CURLY_BRACKET_KEY       "curly_bracket_balance"
+#define OBJECT_COUNTER_KEY	"object_counter"
+#define ONE_OBJECT_MODE_KEY	"one_object_mode"
 
+#define DATA_KEY		"data"
+#define ERROR_KEY		"error"
+#define DONE_KEY		"done"
+#define EOF_KEY			"eof"
 
 
 #define HASH_STORE(__h, __k, __v) *hv_store(__h, __k, sizeof(__k) - 1, __v, 0)
@@ -42,8 +44,14 @@
 
 typedef enum {
 	 WAIT_OBJECT = 1,
-	 WAIT_OBJECT_TAIL,
 	 WAIT_DIVIDER,
+	 WAIT_OBJECT_TAIL,
+	 WAIT_DIGIT_BODY,
+	 WAIT_DIGIT_TAIL,
+	 WAIT_FLOAT_TAIL,
+	 WAIT_ZFLOAT_TAIL,
+	 WAIT_OBJECT_BODY,
+	 WAIT_UNDEF,
 
 	 ERROR_UNEXPECTED_SYMBOL = -1000,
 	 ERROR_BRACKET,
@@ -54,6 +62,7 @@ typedef enum {
 	 EVAL_OBJECT,
 	 UNDEF_OBJECT,
 	 PARSED_OBJECT,
+	 PARSED_NEGATIVE_NUMBER,
 } object_type;
 
 
@@ -71,56 +80,22 @@ typedef struct {
 	int		body;		// index of object's body
 	int		body_size;	// body_size
 	int		block_size;	// ONE_BLOCK_SIZE
-	int		body_digit;	// body is digit
 	object_type	object_found;	// type of found object
 	char		marker_found;
 	int		square_brackets;	// bracket_balance_counters
 	int             curly_brackets;         //
+
+	int 		object_counter;	// parsed object counter
+	int 		one_object_mode;
 } state;
 
 
-static inline char get_end_bracket(char c) {
-
-
-	switch(c) {
-		case '{':
-			return '}';
-		case '[':
-			return ']';
-		case '(':
-			return ')';
-		case '<':
-			return '>';
-		case '~' :
-		case '!' :
-		case '@' :
-		case '#' :
-		case '%' :
-		case '&' :
-		case '$' :
-		case '-' :
-		case '+' :
-		case '|' :
-		case '\\':
-		case '/' :
-		case ',' :
-		case '.' :
-		case ';' :
-		case ':' :
-		case '\'':
-		case '"' :
-		case '^' :
-			return c;
-	}
-	return 0;
-}
 
 static int seek_object(state * state) {
 	int i;
 
 	for (i = state->seen; i < state->len; i++) {
-		state->counter++;
-		if (state->counter >= state->block_size)
+		if (state->counter++ >= state->block_size)
 			break;
 
 		switch(state->str[i]) {
@@ -134,11 +109,9 @@ static int seek_object(state * state) {
 			case '\'':
 				state->marker = i;
 				state->body = i + 1;
-				state->body_size = 0;
 				state->mode = WAIT_OBJECT_TAIL;
 				state->seen = i + 1;
 				state->tsymbol = state->str[i];
-				state->body_digit = 0;
 				state->need_eval = 0;
 				return 1;
 
@@ -159,72 +132,36 @@ static int seek_object(state * state) {
 				state->marker = i;
 				state->seen = i + 1;
 				state->body = i;
-				state->body_size = 0;
-				state->mode = WAIT_OBJECT_TAIL;
-				state->tsymbol = ' ';
-				state->body_digit = 1;
+				state->mode = WAIT_DIGIT_BODY;
 				return 1;
 			CASEDIGIT
 				state->marker = i;
 				state->seen = i + 1;
 				state->body = i;
-				state->body_size = 0;
-				state->mode = WAIT_OBJECT_TAIL;
-				state->tsymbol = '1';
-				state->body_digit = 1;
+				state->mode = WAIT_DIGIT_TAIL;
 				return 1;
 
-
+			case '.':
+				state->marker = i;
+				state->seen = i + 1;
+				state->body = i;
+				state->mode = WAIT_ZFLOAT_TAIL;
+				return 1;
 
 			case 'u':
-				if (i + 4 >= state->len) {
-					state->seen = i;
-					return 0;
-				}
-
-				if (strncmp(&state->str[i], "undef", 5)==0) {
-					state->object_found = UNDEF_OBJECT;
-					state->mode = WAIT_DIVIDER;
-					state->seen = i + 5;
-					return 1;
-				}
-				state->mode = ERROR_UNEXPECTED_SYMBOL;
-				state->seen = i;
-				return 0;
+				state->seen = i + 1;
+				state->marker = state->body = i;
+				state->mode = WAIT_UNDEF;
+				return 1;
 
 			/* perl quotting */
 			case 'q':
-			{
-				if (i + 2 >= state->len) {
-					state->seen = i;
-					return 0;
-				}
-
-				int j = i + 1;
-				const char *p = state->str;
-
-                                state->need_eval = 0;
-				if (p[j] == 'q') {
-					j++;
-                                } else {
-                                    if (p[j] == 'r') {
-					j++;
-					state->need_eval = 1;
-                                    }
-                                }
-
-				char end_symbol = get_end_bracket(p[j]);
-				if (end_symbol) {
-					state->marker = i;
-					state->body_size = 0;
-					state->mode = WAIT_OBJECT_TAIL;
-					state->seen = j + 1;
-					state->body = j + 1;
-					state->tsymbol = end_symbol;
-					state->body_digit = 0;
-					return 1;
-				}
-			} /* no break: error */
+				state->marker = i;
+				state->body = i;
+				state->mode = WAIT_OBJECT_BODY;
+				state->seen = i + 1;
+				state->need_eval = 0;
+				return 1;
 
 			/* unexpected symbol */
 			default:
@@ -239,48 +176,87 @@ static int seek_object(state * state) {
 }
 
 
+static int seek_object_body(state * state) {
+	int i;
+
+	for (i = state->seen; i < state->len; i++) {
+		if (state->counter++ >= state->block_size)
+			break;
+
+		if (i - state->marker > 2) {
+			state->mode = ERROR_UNEXPECTED_SYMBOL;
+			state->seen = state->marker;
+			return 0;
+		}
+
+		switch (state->str[i]) {
+			case 'r':
+				state->need_eval = 1;
+			case 'q':
+				if (state->marker == i - 1) {
+					state->seen = i + 1;
+					continue;
+				}
+				state->mode = ERROR_UNEXPECTED_SYMBOL;
+				state->seen = state->marker;
+				return 0;
+
+			case '{':
+				state->body = i + 1;
+				state->tsymbol = '}';
+				state->seen = i + 1;
+				state->mode = WAIT_OBJECT_TAIL;
+				return 1;
+			
+			case '[':
+				state->body = i + 1;
+				state->tsymbol = ']';
+				state->seen = i + 1;
+				state->mode = WAIT_OBJECT_TAIL;
+				return 1;
+			
+			case '(':
+				state->body = i + 1;
+				state->tsymbol = ')';
+				state->seen = i + 1;
+				state->mode = WAIT_OBJECT_TAIL;
+				return 1;
+			
+			case '<':
+				state->body = i + 1;
+				state->tsymbol = '>';
+				state->seen = i + 1;
+				state->mode = WAIT_OBJECT_TAIL;
+				return 1;
+			
+			case '~' : case '!' : case '@' : case '#' :
+			case '%' : case '&' : case '$' : case '-' :
+			case '+' : case '|' : case '\\': case '/' :
+			case ',' : case '.' : case ';' : case ':' :
+			case '\'': case '"' : case '^' :
+				state->body = i + 1;
+				state->tsymbol = state->str[i];
+				state->seen = i + 1;
+				state->mode = WAIT_OBJECT_TAIL;
+				return 1;
+
+			default:
+				state->mode = ERROR_UNEXPECTED_SYMBOL;
+				state->seen = state->marker;
+				return 0;
+		}
+	}
+
+	return 0;
+}
+
+
 static int seek_object_tail(state *state) {
 	int i;
 
 	for (i = state->seen; i < state->len; i++) {
-		state->counter++;
-		if (state->counter >= state->block_size)
+		if (state->counter++ >= state->block_size)
 			break;
-
-		if (state->body_digit) {
-			/* ignore spaces */
-			if (state->tsymbol == ' ') {
-				if (IS_SPACE(state->str[i])) {
-					state->seen = i + 1;
-					continue;
-				}
-
-				if (IS_DIGIT(state->str[i])) {
-					state->tsymbol = state->str[i];
-					state->seen = i + 1;
-					continue;
-				}
-
-				state->mode = ERROR_UNEXPECTED_SYMBOL;
-				state->seen = state->body;
-				return 0;
-			}
-
-			if (IS_DIGIT(state->str[i])) {
-				state->seen = i + 1;
-				continue;
-			}
-
-			/* found the end of digit */
-			state->body_size = i - state->body;
-			state->seen = i;
-			state->object_found = PARSED_OBJECT;
-			if (state->str[state->body] == '+')
-			    state->object_found = EVAL_OBJECT;
-			state->mode = WAIT_DIVIDER;
-
-			return 1;
-		}
 
 		/* found the object */
 		if (state->str[i] == state->tsymbol) {
@@ -298,14 +274,10 @@ static int seek_object_tail(state *state) {
 		}
 
 		if (state->str[i] == '\\') {
-			if (i < state->len - 1) {
-				i++;			// skip escaped symbol
-				state->need_eval = 1;
-				state->seen = i + 1;
-				continue;
-			}
-			state->seen = i;
-			return 0;
+			state->need_eval = 1;
+			state->seen = i + 2;	// skip escaped symbol
+			i++;
+			continue;
 		}
 
 		state->seen = i + 1;
@@ -314,12 +286,174 @@ static int seek_object_tail(state *state) {
 	return 0;
 }
 
+// \d+
+static int seek_float_tail(state *state) {
+	int i;
 
+	for (i = state->seen; i < state->len; i++) {
+		if (state->counter++ >= state->block_size)
+			break;
+
+		switch (state->str[i]) {
+			CASEDIGIT
+				state->seen = i + 1;
+				continue;
+
+			default:
+				state->seen = i;
+				state->mode = WAIT_DIVIDER;
+				state->object_found = PARSED_OBJECT;
+
+				if (state->str[state->marker] == '-') {
+					state->object_found =
+						PARSED_NEGATIVE_NUMBER;
+				}
+
+				state->body_size = i - state->body;
+				return 1;
+		}
+	}
+
+	return 0;
+}
+
+// \.\d
+static int seek_zfloat_tail(state *state) {
+	int i;
+
+	for (i = state->seen; i < state->len; i++) {
+		if (state->counter++ >= state->block_size)
+			break;
+
+		switch (state->str[i]) {
+			CASEDIGIT
+				state->seen = i + 1;
+				state->mode = WAIT_FLOAT_TAIL;
+				return 1;
+
+			default:
+				state->seen = state->marker;
+				state->mode = ERROR_UNEXPECTED_SYMBOL;
+				return 0;
+		}
+	}
+
+	return 0;
+}
+
+// \d+$ | \d\.
+static int seek_digit_tail(state *state) {
+	int i;
+
+	for (i = state->seen; i < state->len; i++) {
+		if (state->counter++ >= state->block_size)
+			break;
+
+		switch (state->str[i]) {
+			case '.':
+				state->seen = i + 1;
+				state->mode = WAIT_FLOAT_TAIL;
+				return 1;
+
+			CASEDIGIT
+				state->seen = i + 1;
+				continue;
+
+			default:
+				state->seen = i;
+				state->mode = WAIT_DIVIDER;
+				state->object_found = PARSED_OBJECT;
+
+				if (state->str[state->marker] == '-') {
+					state->object_found =
+						PARSED_NEGATIVE_NUMBER;
+				}
+
+				state->body_size = i - state->body;
+				return 1;
+		}
+	}
+
+	return 0;
+}
+
+// \d
+static int seek_digit_body(state *state) {
+	int i;
+
+	for (i = state->seen; i < state->len; i++) {
+		if (state->counter++ >= state->block_size)
+			break;
+
+		switch (state->str[i]) {
+			CASESPACE
+				state->seen = i + 1;
+				continue;
+
+			CASEDIGIT
+				state->body = i;
+				state->seen = i + 1;
+				state->mode = WAIT_DIGIT_TAIL;
+				return 1;
+
+
+			default:
+				state->mode = ERROR_UNEXPECTED_SYMBOL;
+				state->seen = state->marker;
+				return 0;
+		}
+	}
+
+	return 0;
+}
+
+// undef
+static int seek_undef(state *state) {
+	int i;
+
+	for (i = state->seen; i < state->len; i++) {
+		if (state->counter++ >= state->block_size)
+			break;
+
+		// u - 0 <- state->body
+		// n - 1
+		// d - 2
+		// e - 3
+		// f - 4 <- i
+		// length = 1 + i - state->body
+		if (i - state->body < 4) {
+			int len = i - state->body + 1;
+			char *str = state->str + state->body;
+			state->seen = i + 1;
+			if (strncmp(str, "undef", len) != 0) {
+				state->mode = ERROR_UNEXPECTED_SYMBOL;
+				state->seen = state->body;
+				return 0;
+			}
+			continue;
+		}
+
+		if (strncmp(&state->str[state->body], "undef", 5) == 0) {
+			state->object_found = UNDEF_OBJECT;
+			state->body_size = 5;
+			state->mode = WAIT_DIVIDER;
+			state->seen = i + 1;
+			return 1;
+		}
+
+		state->mode = ERROR_UNEXPECTED_SYMBOL;
+		state->seen = state->body;
+		return 0;
+	}
+
+	return 0;
+}
+
+// , | =>
 static int seek_divider(state *state) {
 	int i;
 	for (i = state->seen; i < state->len; i++) {
-		state->counter++;
-		if (state->counter >= state->block_size)
+		if (state->counter++ >= state->block_size)
 			break;
 
 		switch(state->str[i]) {
@@ -332,13 +466,18 @@ static int seek_divider(state *state) {
 					state->seen = i;
 					return 0;
 				}
-				if (state->str[i+1] == '>') {
+				if (state->str[i + 1] == '>') {
 					state->seen = i + 2;
 					state->mode = WAIT_OBJECT;
 					return 1;
 				}
+				
+				state->seen = i;
+				state->mode = ERROR_UNEXPECTED_SYMBOL;
+				return 0; 
 			CASESPACE
-				break;
+				state->seen = i + 1;
+				continue;
 
 			case ']':
 			case '}':
@@ -354,12 +493,10 @@ static int seek_divider(state *state) {
 				return 0;
 
 		}
-		state->seen = i + 1;
 
 	}
 	return 0;
 }
-
 
 static int eval_value(SV * v) {
 	dSP;
@@ -395,7 +532,7 @@ static int eval_value(SV * v) {
 	return ok;
 }
 
-
+// reference
 static SV * collapse_ref_markers(SV *v, AV *queue, AV *markers) {
 	int i;
 	int mcount = av_len(markers);
@@ -518,18 +655,25 @@ static void collapse_hashref(state * state, AV * queue, AV *markers) {
 
 	HV * hr = newHV();
 	for (i = open_index; i < close_index; i+= 2) {
-		SV *k, *v;
-		v = av_pop(queue);
-		k = av_pop(queue);
+		SV *k = * av_fetch(queue, i, 0);
+		SV *v = * av_fetch(queue, i + 1, 0);
 
 		// undefined key: we do this action like 'eval'
 		if (!SvOK(k))
 			sv_setpvn(k, "", 0);
 
-		// hv_store_ent(hr, sv_2mortal(k), v, 0);
-		hv_store_ent(hr, k, v, 0);
+		if (hv_exists_ent(hr, k, 0)) {
+			STRLEN keylen;
+			char * key = SvPV(k, keylen);
+			sv_setsv(*hv_fetch(hr, key, keylen, 0), v);
+			SvREFCNT_dec(v);
+		} else {
+			hv_store_ent(hr, k, v, 0);
+		}
 		SvREFCNT_dec(k);
 	}
+	for (i = open_index; i < close_index; i++)
+		av_pop(queue);
 
 	SvREFCNT_dec(av_pop(markers));
 	SvREFCNT_dec(av_pop(markers));
@@ -538,16 +682,30 @@ static void collapse_hashref(state * state, AV * queue, AV *markers) {
 	av_push(queue, newRV_noinc((SV *)hr));
 }
 
+/* returns true if parsing can be continued */
+static int reg_found_object(state * state, AV * queue, AV * markers) {
+	if (av_len(markers) > -1)
+		return 1;
+	state->object_counter++;
+	if (state->one_object_mode) {
+		while(av_len(queue) > 0) {
+			SV * dv = av_shift(queue);
+			SvREFCNT_dec(dv);
+		}
+		return 0;
+	}
+	return 1;
+}
+
 MODULE = Data::StreamDeserializer PACKAGE = Data::StreamDeserializer
-INCLUDE: const-xs.inc
 PROTOTYPES: ENABLE
 
-
-HV * _ds_init()
+SV * _low_level_new(class)
+        SV * class
     PREINIT:
         HV *res		= newHV();
     CODE:
-        sv_2mortal((SV *)res);
+        // sv_2mortal((SV *)res);
         HASH_STORE(res, QUEUE_KEY, newRV_noinc((SV *)newAV()));
         HASH_STORE(res, MARKERS_KEY, newRV_noinc((SV *)newAV()));
         HASH_STORE(res, SEEN_KEY, newSViv(0));
@@ -557,57 +715,68 @@ HV * _ds_init()
         HASH_STORE(res, BLOCK_SIZE_KEY, newSViv(ONE_BLOCK_SIZE));
         HASH_STORE(res, TAIL_KEY, newSVpv("", 0));
         HASH_STORE(res, COUNTER_KEY, newSViv(0));
-        HASH_STORE(res, BODY_DIGIT_KEY, newSViv(0));
         HASH_STORE(res, BODY_START_KEY, newSViv(0));
         HASH_STORE(res, NEED_EVAL_KEY, newSViv(0));
         HASH_STORE(res, SQUARE_BRACKET_KEY, newSViv(0));
         HASH_STORE(res, CURLY_BRACKET_KEY, newSViv(0));
+        HASH_STORE(res, DATA_KEY, newSVpv("", 0));
+        HASH_STORE(res, ERROR_KEY, newRV_noinc((SV *)newAV()));
+        HASH_STORE(res, DONE_KEY, newSViv(0));
+        HASH_STORE(res, EOF_KEY,  newSViv(0));
+        HASH_STORE(res, OBJECT_COUNTER_KEY, newSViv(0));
+        HASH_STORE(res, ONE_OBJECT_MODE_KEY, newSViv(0));
 
-        RETVAL		= res;
+	HV * stash = gv_stashsv(class, GV_ADDWARN);
+	SV * ref = newRV_noinc((SV *)res);
+	RETVAL = sv_bless(ref, stash);
     OUTPUT:
         RETVAL
 
 
-
-int _ds_look_tail(st, data)
-        HV * st
-        SV * data
+int _ds_look_tail(self)
+	SV * self
     PREINIT:
+    	HV * st = (HV *)SvRV(self);
+        SV * data;
         AV * queue;
         AV * markers;
         state state;
-        state.counter = 0;
-        state.str = SvPV(data, state.len);
     CODE:
+        state.seen = SvIV(HASH_FETCH(st, SEEN_KEY));
+        state.mode = SvIV(HASH_FETCH(st, MODE_KEY));
+        state.str = SvPV(HASH_FETCH(st, DATA_KEY), state.len);
+        state.counter = 0;
+
         if (!state.len) {
-            if (state.mode < 0) {
-		RETVAL = 1;
-            } else {
-                if (state.seen)
-                    RETVAL = 0;
-                else
-                    RETVAL = 1;
-            }
-            return;
+        	RETVAL = 1;
+        	goto FINISH;
         }
+
+        if (state.mode < 0) {
+		RETVAL = 1;
+        	goto FINISH;
+	}
+
+	if (state.seen >= state.len - 1) {
+		RETVAL = 1;
+        	goto FINISH;
+	}
 
         queue	= (AV *) SvRV((AV *) HASH_FETCH(st, QUEUE_KEY));
         markers	= (AV *) SvRV((AV *) HASH_FETCH(st, MARKERS_KEY));
-        state.mode = SvIV(HASH_FETCH(st, MODE_KEY));
-        state.seen = SvIV(HASH_FETCH(st, SEEN_KEY));
         state.marker = SvIV(HASH_FETCH(st, MARKER_KEY));
         state.tsymbol = *SvPV_nolen(HASH_FETCH(st, TRAILING_KEY));
 
         state.body = SvIV(HASH_FETCH(st, BODY_START_KEY));
-        state.body_digit = SvIV(HASH_FETCH(st, BODY_DIGIT_KEY));
         state.need_eval = SvIV(HASH_FETCH(st, NEED_EVAL_KEY));
-        state.square_brackets =
-            SvIV(HASH_FETCH(st, SQUARE_BRACKET_KEY));
+        state.square_brackets = SvIV(HASH_FETCH(st, SQUARE_BRACKET_KEY));
         state.curly_brackets = SvIV(HASH_FETCH(st, CURLY_BRACKET_KEY));
 
         state.object_found = NO_OBJECT;
         state.marker_found = NO_MARKER;
         state.block_size = SvIV(HASH_FETCH(st, BLOCK_SIZE_KEY));
+        state.object_counter = SvIV(HASH_FETCH(st, OBJECT_COUNTER_KEY));
+        state.one_object_mode = SvIV(HASH_FETCH(st, ONE_OBJECT_MODE_KEY));
 
         if (!state.block_size)
                 state.block_size = ONE_BLOCK_SIZE;
@@ -621,10 +790,37 @@ int _ds_look_tail(st, data)
                         case WAIT_OBJECT_TAIL:
                                 cf = seek_object_tail(&state);
                                 break;
+                        case WAIT_DIGIT_TAIL:
+                        	cf = seek_digit_tail(&state);
+                        	break;
+
+                        case WAIT_DIGIT_BODY:
+                        	cf = seek_digit_body(&state);
+                        	break;
 
                         case WAIT_DIVIDER:
                                 cf = seek_divider(&state);
                                 break;
+
+                        case WAIT_OBJECT_BODY:
+                        	cf = seek_object_body(&state);
+                        	break;
+
+                        case WAIT_UNDEF:
+                        	cf = seek_undef(&state);
+                        	break;
+
+                        case WAIT_FLOAT_TAIL:
+                        	cf = seek_float_tail(&state);
+                        	break;
+                        
+                        case WAIT_ZFLOAT_TAIL:
+                        	cf = seek_zfloat_tail(&state);
+                        	break;
+
+
+                        default:
+                        	croak("Unknown state.mode");
                 }
 
 
@@ -635,6 +831,12 @@ int _ds_look_tail(st, data)
                         );
 
                         switch(state.object_found) {
+                        	case PARSED_NEGATIVE_NUMBER:
+                        		sv_setpvn(v, "-", 1);
+                        		sv_catpvn(v,
+                        			 state.str + state.body,
+                        			  state.body_size);
+                        		break;
                                 case EVAL_OBJECT:
                                         if (!eval_value(v)) {
                                                 state.mode = ERROR_SCALAR;
@@ -651,6 +853,10 @@ int _ds_look_tail(st, data)
 			v = collapse_ref_markers(v, queue, markers);
                         av_push(queue, v);
                         state.object_found = 0;
+
+			/* increment object_counter, force to exit if need */
+			if (!reg_found_object(&state, queue, markers))
+				cf = 0;
                 }
 
                 if (state.marker_found) {
@@ -681,11 +887,22 @@ int _ds_look_tail(st, data)
 
                         av_push(markers, newRV_noinc((SV *) mi));
 
-                        if (state.marker_found == ']')
+                        if (state.marker_found == ']') {
 				collapse_arrayref(&state, queue, markers);
+				/* increment object_counter,
+				   force to exit if need */
+				if (!reg_found_object(&state, queue, markers))
+					cf = 0;
+			}
 
-                        if (state.marker_found == '}')
+                        if (state.marker_found == '}') {
 				collapse_hashref(&state, queue, markers);
+				/* increment object_counter,
+				   force to exit if need */
+				if (!reg_found_object(&state, queue, markers))
+					cf = 0;
+			}
+
                         state.marker_found = 0;
                 }
 
@@ -700,13 +917,11 @@ int _ds_look_tail(st, data)
         sv_setpvn(HASH_FETCH(st, TRAILING_KEY), &state.tsymbol, 1);
         sv_setiv(HASH_FETCH(st, MARKER_KEY), state.marker);
         sv_setiv(HASH_FETCH(st, COUNTER_KEY), state.counter);
-        sv_setiv(HASH_FETCH(st, BODY_DIGIT_KEY), state.body_digit);
         sv_setiv(HASH_FETCH(st, BODY_START_KEY), state.body);
         sv_setiv(HASH_FETCH(st, NEED_EVAL_KEY), state.need_eval);
-        sv_setiv(
-            HASH_FETCH(st, SQUARE_BRACKET_KEY), state.square_brackets);
-        sv_setiv(
-            HASH_FETCH(st, CURLY_BRACKET_KEY), state.curly_brackets);
+        sv_setiv(HASH_FETCH(st, SQUARE_BRACKET_KEY), state.square_brackets);
+        sv_setiv(HASH_FETCH(st, CURLY_BRACKET_KEY), state.curly_brackets);
+        sv_setiv(HASH_FETCH(st, OBJECT_COUNTER_KEY), state.object_counter);
 
 
         // if eof we will show unparsed tail
@@ -724,7 +939,7 @@ int _ds_look_tail(st, data)
                 sv_setpvn(HASH_FETCH(st, TAIL_KEY), "", 0);
         }
 
-        if (state.seen < state.len) {
+        if (state.seen < state.len - 1) {
                 if (state.mode < 0)
                     RETVAL = 1;
                 else
@@ -733,11 +948,65 @@ int _ds_look_tail(st, data)
                 RETVAL = 1;
         }
 
-    OUTPUT:
-        RETVAL
+	FINISH:
+
+	OUTPUT:
+        	RETVAL
 
 unsigned long _memory_size()
         CODE:
                 RETVAL = (unsigned long) sbrk(0);
         OUTPUT:
                 RETVAL
+
+const char * _error_string(self)
+	SV * self
+
+	CODE:
+    		HV * st = (HV *)SvRV(self);
+        	int mode = SvIV(HASH_FETCH(st, MODE_KEY));
+
+        	switch(mode) {
+			case ERROR_UNEXPECTED_SYMBOL:
+				RETVAL = "Unexpected symbol";
+				break;
+			
+			case ERROR_BRACKET:
+				RETVAL = "Bracket balance error";
+				break;
+
+			case ERROR_SCALAR:
+				RETVAL = "Can't extract scalar";
+				break;
+
+			default:
+				RETVAL = "";
+		}
+
+	OUTPUT:
+		RETVAL
+
+void _skip_divider(self)
+	SV * self
+
+	CODE:
+    		HV * st = (HV *)SvRV(self);
+        	int mode = SvIV(HASH_FETCH(st, MODE_KEY));
+
+        	if (mode < 0)
+        		return;
+
+        	if (mode == WAIT_OBJECT)
+        		return;
+
+        	if (mode == WAIT_DIVIDER) {
+        		sv_setiv(HASH_FETCH(st, MODE_KEY), WAIT_OBJECT);
+        		return;
+		}
+
+		croak(
+			"You can skip divider only if You fetched object. "
+			"wait until 'next_object' returns TRUE and then "
+			"You will able to skip divider"
+		);
+

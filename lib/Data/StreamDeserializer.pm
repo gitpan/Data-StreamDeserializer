@@ -9,36 +9,22 @@ require Exporter;
 use AutoLoader;
 
 our @ISA = qw(Exporter);
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 use XSLoader;
 XSLoader::load('Data::StreamDeserializer', $VERSION);
 
-
-use constant ERROR_UNEXPECTED_SYMBOL => -1000;
-use constant ERROR_BRACKET => -999;
-use constant ERROR_SCALAR => -998;
-
-use subs qw(_ds_init _ds_look_tail);
-
 sub new
 {
     my ($class, %opts) = @_;
-    my $self = bless {
-        data    => '',
-        error   => [],
-        done    => 0,
-        eof     => 0,
-    } => ref($class) || $class;
-    $self->{ds} = _ds_init;
-    $self->block_size($opts{block_size} || 512);
+    my $class_name = ref($class) || $class;
 
-
+    my $self = $class_name->_low_level_new;
+    $self->block_size($opts{block_size}) if exists $opts{block_size};
     if (exists $opts{data}) {
-        $self->part($opts{data});   #
+        $self->part($opts{data});
         $self->part;
     }
-
     return $self;
 }
 
@@ -46,9 +32,9 @@ sub new
 sub block_size
 {
     my ($self, $value) = @_;
-    return $self->{ds}{block_size} unless @_ > 1;
-    croak "You can't set null block_size" unless $value;
-    return $self->{ds}{block_size} = $value;
+    return $self->{block_size} unless @_ > 1;
+    croak "You can't set zero block_size" unless $value;
+    return $self->{block_size} = $value;
 }
 
 
@@ -73,33 +59,28 @@ sub next
 
     $self->part(@data) if @data;
 
+
     return 1 if $self->{done};
-    if ($self->{ds}{seen} < length $self->{data}) {
-        return 0 unless _ds_look_tail($self->{ds}, $self->{data});
+    if ($self->{seen} < -1 + length $self->{data}) {
+        return 0 unless $self->_ds_look_tail;
         goto CHECK_ERROR;
     }
     goto CHECK_ERROR if $self->{eof};
     return 0;
 
     CHECK_ERROR:
-        my $mode = $self->{ds}{mode};
+        my $mode = $self->{mode};
         if ($mode < 0) {
-            if ($mode == ERROR_SCALAR) {
-                $self->_push_error("Scalar parsing error");
-            } elsif($mode == ERROR_BRACKET) {
-                $self->_push_error("Bracket balance error");
-            } else {
-                $self->_push_error("Unexpected symbol");
-            }
+            $self->_push_error($self->_error_string);
             delete $self->{data};
             return $self->{done} = 1;
         }
         if ($self->{eof}) {
-            return 0 if $self->{ds}{seen} < length $self->{data};
-            if (@{$self->{ds}{markers}}) {
+            return 0 if $self->{seen} < -1 + length $self->{data};
+            if (@{$self->{markers}}) {
                 $self->_push_error(
                     sprintf "Unclosed brackets: '%s'",
-                        join "', '", map $_->[0], @{ $self->{ds}{markers} }
+                        join "', '", map $_->[0], @{ $self->{markers} }
                 );
             }
             delete $self->{data};
@@ -107,6 +88,30 @@ sub next
         }
 
         return 0;
+}
+
+sub is_done
+{
+    my ($self) = @_;
+    return $self->{done};
+}
+
+sub next_object
+{
+    my ($self, @data) = @_;
+    my $cnt = $self->{object_counter};
+
+    $self->{one_object_mode} = 1;
+    my $res = $self->next(@data);
+    $self->{one_object_mode} = 0;
+    return 1 if $res;
+    return $cnt < $self->{object_counter};
+}
+
+sub skip_divider
+{
+    my ($self) = @_;
+    $self->_skip_divider;
 }
 
 sub is_error
@@ -127,21 +132,19 @@ sub tail
 {
     my ($self) = @_;
     if ($self->{eof}) {
-        return '' unless length $self->{ds}{tail};
-        return substr $self->{ds}{tail}, 0, -1 + length $self->{ds}{tail};
+        return '' unless length $self->{tail};
+        return substr $self->{tail}, 0, -1 + length $self->{tail};
     }
-    return $self->{ds}{tail};
+    return $self->{tail};
 }
 
 
 sub result
 {
     my ($self, $behaviour) = @_;
-    return unless $self->{done};
-    die $self->error if @{ $self->{error} };
     $behaviour ||= 'first';
-    return $self->{ds}{queue}[0] if $behaviour eq 'first';
-    return $self->{ds}{queue} if $behaviour eq 'all';
+    return $self->{queue}[0] if $behaviour eq 'first';
+    return $self->{queue} if $behaviour eq 'all';
     croak "Unknown behaviour '$behaviour'";
 }
 
@@ -275,6 +278,62 @@ in the future.
 Processes to parse next L<block_size> bytes. Returns B<TRUE> if an error
 was detected or all input datas were parsed.
 
+=head2 next_object
+
+The same as L<next> but returns B<true> after new object is found.
+Drop previous results.
+
+For example You have the string:
+
+    $str = "1, 2, [ 0, 1 ], { 'a' => 'b' }";
+
+You can extract objects:
+
+    my $dsr = new Data::StreamDeserializer data => $str;
+
+    1 until $dsr->next_object;
+    my $first = $dsr->result;       # scalar: 1
+
+    1 until $dsr->next_object;
+    my $second = $dsr->result;      # scalar: 2
+
+    1 until $dsr->next_object;
+    my $third = $dsr->result;       # arrayref: [ 0, 1 ]
+
+    1 until $dsr->next_object;
+    my $third = $dsr->result;       # hashref: { 'a' => 'b' }
+
+=head2 skip_divider
+
+If You have a string:
+
+    Object Object Object
+
+(there are no dividers between objects), You can call L<skip_divider> after
+fetching the next object.
+
+Example:
+
+    $str = "1 2 [ 0, 1 ]{ 'a' => 'b' }";
+
+    my $dsr = new Data::StreamDeserializer data => $str;
+
+    1 until $dsr->next_object;
+    my $first = $dsr->result;       # scalar: 1
+
+    $dsr->skip_divider;
+
+    1 until $dsr->next_object;
+    my $second = $dsr->result;      # scalar: 2
+
+    $dsr->skip_divider;
+    1 until $dsr->next_object;
+    my $third = $dsr->result;       # arrayref: [ 0, 1 ]
+
+B<Important>: You can't skip dividers inside nested object. The function
+will croak if You call it in the point that isn't between objects.
+
+
 =head2 is_error
 
 Returns B<TRUE> if an error was detected.
@@ -295,6 +354,13 @@ the first parsed object.
 You can call the function with argument B<'all'>
 to get all parsed objects. In this case the function will receive
 B<ARRAYREF>.
+
+=head2 is_done
+
+Returns B<TRUE> if all input data were processed or an error was found.
+If You didn't call L<part> without arguments, and didn't call L<next>
+or L<next_object> with B<undef> the function could return B<TRUE> only
+if an error occured.
 
 =head1 PRIVATE METHODS
 

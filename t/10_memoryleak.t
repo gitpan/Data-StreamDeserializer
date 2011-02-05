@@ -69,6 +69,8 @@ for(;;)
         $size_end = Data::StreamDeserializer::_memory_size;
         last;
     }
+
+    last if Data::StreamDeserializer::_memory_size != $size;
 }
 
 ok $size_end == $size, "Check memory leak";
@@ -76,7 +78,7 @@ note "$i iterations were done, $len bytes were parsed";
 
 $time = time;
 $size = $size_end;
-for (1 .. 2000_000 + int rand 5000_000) {
+for (1 .. 20_000_000 + int rand 50_000_000) {
     push @tests, rand rand 1000;
     last if Data::StreamDeserializer::_memory_size != $size;
 }
