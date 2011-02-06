@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Data-StreamDeserializer
-version:            0.04
+version:            0.05
 abstract:           non-blocking deserializer.
 author:
     - Dmitry E. Oboukhov <unera@debian.org>

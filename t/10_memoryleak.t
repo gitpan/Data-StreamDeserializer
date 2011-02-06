@@ -44,9 +44,9 @@ my $size_end;
 my $counter = 0;
 my $i = 0;
 my $len = 0;
+my $pcount = 0;
 
-my @tests = map { Dumper gen_rand_object  } 0 .. 20;
-my $time = time;
+my @tests = map { Dumper gen_rand_object  } 0 .. 5;
 for(;;)
 {
     my $str = $tests[rand @tests];
@@ -54,33 +54,26 @@ for(;;)
 
     $i++ until $ds->next;
     $len+= length $str;
+    $pcount++;
 
-    if (time - $time > $counter and $counter < 5) {
+    if ($pcount < 20) {
         $size = Data::StreamDeserializer::_memory_size;
-        $counter++;
-    }
-
-    if ($counter < 10) {
-        if (time - $time > $counter and $counter >= 5) {
-            $size_end = Data::StreamDeserializer::_memory_size;
-            $counter++;
-        }
-    } else {
+    } elsif ($pcount < 100) {
         $size_end = Data::StreamDeserializer::_memory_size;
+        last if $size_end != $size;
+    } else {
         last;
     }
-
-    last if Data::StreamDeserializer::_memory_size != $size;
 }
 
 ok $size_end == $size, "Check memory leak";
-note "$i iterations were done, $len bytes were parsed";
+note "$pcount/$i iterations/subiterations were done, $len bytes were parsed";
 
-$time = time;
 $size = $size_end;
 for (1 .. 20_000_000 + int rand 50_000_000) {
     push @tests, rand rand 1000;
-    last if Data::StreamDeserializer::_memory_size != $size;
+    $size_end = Data::StreamDeserializer::_memory_size;
+    last if $size_end != $size;
 }
-ok Data::StreamDeserializer::_memory_size != $size,
+ok $size_end != $size,
     sprintf "Check memory checker (size: %d elements) :)", scalar @tests;
