@@ -11,6 +11,7 @@ use Test::More tests    => 3;
 use Data::Dumper;
 use Time::HiRes qw(time);
 use Encode qw(decode encode);
+use Sys::Hostname;
 
 
 BEGIN {
@@ -56,7 +57,7 @@ for(;;)
     $len+= length $str;
     $pcount++;
 
-    if ($pcount < 20) {
+    if ($pcount < 30) {
         $size = Data::StreamDeserializer::_memory_size;
     } elsif ($pcount < 100) {
         $size_end = Data::StreamDeserializer::_memory_size;
@@ -66,14 +67,19 @@ for(;;)
     }
 }
 
-ok $size_end == $size, "Check memory leak";
+my $leak = $size_end - $size;
+ok $size_end == $size, "Check memory leak ($leak bytes)";
 note "$pcount/$i iterations/subiterations were done, $len bytes were parsed";
 
-$size = $size_end;
-for (1 .. 20_000_000 + int rand 50_000_000) {
-    push @tests, rand rand 1000;
-    $size_end = Data::StreamDeserializer::_memory_size;
-    last if $size_end != $size;
+SKIP: {
+    skip "This test is only for my system", 1
+        if hostname !~ /^(apache|marish|nbw)$/;
+    $size = $size_end;
+    for (1 .. 20_000_000 + int rand 50_000_000) {
+        push @tests, rand rand 1000;
+        $size_end = Data::StreamDeserializer::_memory_size;
+        last if $size_end != $size;
+    }
+    ok $size_end != $size,
+        sprintf "Check memory checker (size: %d elements) :)", scalar @tests;
 }
-ok $size_end != $size,
-    sprintf "Check memory checker (size: %d elements) :)", scalar @tests;
